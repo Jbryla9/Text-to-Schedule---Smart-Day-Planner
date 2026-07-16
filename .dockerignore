@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.env
+.env.*
+logs
+app/apikey
+app/*.ipynb
+**/.ipynb_checkpoints
+app/planner_bug.py
+app/test_*.py
+app/*.txt
