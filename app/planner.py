@@ -9,8 +9,7 @@ task, free gap, or unscheduled task with a reason.
 Algorithm
 ---------
 1. Build a minute-resolution timeline [0, day_len) where 0 = wake_up.
-2. Sort fixed events by start time. Merge/clamp overlapping events so
-   every rendered slot is non-overlapping.
+2. Sort fixed events by start time and report overlapping commitments.
 3. Block all fixed-event minutes in free[].
 4. Deduplicate tasks against fixed events by name.
 5. Sort tasks: high → medium → low, then shorter first within same tier.
@@ -27,7 +26,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from models import Schedule, FixedEvent, Task
+from .models import Schedule, FixedEvent, Task
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -71,11 +70,20 @@ class UnscheduledTask:
 
 
 @dataclass
+class ScheduleConflict:
+    first_event:  str
+    second_event: str
+    overlap_start: str
+    overlap_end:   str
+
+
+@dataclass
 class DayPlan:
     wake_up:     str
     sleep:       str
     slots:       list[Slot]            = field(default_factory=list)
     unscheduled: list[UnscheduledTask] = field(default_factory=list)
+    conflicts:   list[ScheduleConflict] = field(default_factory=list)
     warnings:    list[str]             = field(default_factory=list)
 
     def summary(self) -> str:
@@ -90,6 +98,14 @@ class DayPlan:
             lines.append("  Warnings:")
             for w in self.warnings:
                 lines.append(f"    ! {w}")
+        if self.conflicts:
+            lines.append(f"{'─'*52}")
+            lines.append("  Conflicts:")
+            for conflict in self.conflicts:
+                lines.append(
+                    f"    ! {conflict.first_event} overlaps {conflict.second_event} "
+                    f"from {conflict.overlap_start} to {conflict.overlap_end}"
+                )
         if self.unscheduled:
             lines.append(f"{'─'*52}")
             lines.append("  Unscheduled:")
@@ -129,13 +145,13 @@ class GreedyPlanner:
         # ── 1. free[] timeline: index i = minute (wake + i) ───────────────────
         free: list[bool] = [True] * day_len
 
-        # ── 2. Sort + merge overlapping fixed events ──────────
+        # Keep conflicting commitments separate so users can see and resolve them.
         sorted_events = sorted(schedule.fixed_events, key=lambda e: _to_min(e.start))
-        merged_events = _merge_overlapping(sorted_events, warnings)
+        conflicts = _find_conflicts(sorted_events)
 
         # ── 3. Block fixed events in free[] ───────────────────────────────────
         event_slots: list[Slot] = []
-        for ev in merged_events:
+        for ev in sorted_events:
             ev_start_rel = _to_min(ev.start) - wake
             ev_end_rel   = _to_min(ev.end)   - wake
             # Clamp to active window
@@ -154,7 +170,7 @@ class GreedyPlanner:
             ))
 
         # ── 4. Build set of fixed-event names for deduplication  ───
-        event_names = {_normalise(e.name) for e in merged_events}
+        event_names = {_normalise(e.name) for e in sorted_events}
 
         # ── 5. Sort tasks: priority → duration (shorter first within tier) ─────
         sorted_tasks = sorted(
@@ -224,58 +240,35 @@ class GreedyPlanner:
             sleep=schedule.sleep,
             slots=all_slots,
             unscheduled=unscheduled,
+            conflicts=conflicts,
             warnings=warnings,
         )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _merge_overlapping(events: list[FixedEvent], warnings: list[str]) -> list[FixedEvent]:
-    """
-    merge fixed events that overlap so they render as a single
-    non-overlapping slot. Events must be sorted by start time before calling.
 
-    Merging strategy: extend the running end time; concatenate names.
-    E.g. dinner(13:30–14:30) + english(14:00–14:30) → dinner + english(13:30–14:30)
-    """
-    if not events:
-        return []
-
-    merged: list[FixedEvent] = []
-    current = events[0]
-
-    for nxt in events[1:]:
-        cur_end  = _to_min(current.end)
-        nxt_start = _to_min(nxt.start)
-        nxt_end   = _to_min(nxt.end)
-
-        if nxt_start < cur_end:
-            # Overlap detected — merge
-            new_end  = max(cur_end, nxt_end)
-            new_name = f"{current.name} + {nxt.name}"
-            warnings.append(
-                f"Fixed events '{current.name}' and '{nxt.name}' overlap "
-                f"({current.start}–{current.end} / {nxt.start}–{nxt.end}) "
-                f"— merged into '{new_name}' ({current.start}–{_to_hhmm(new_end)})"
-            )
-            # Rebuild as a plain object (FixedEvent is a Pydantic model)
-            current = _make_event(new_name, current.start, _to_hhmm(new_end))
-        else:
-            merged.append(current)
-            current = nxt
-
-    merged.append(current)
-    return merged
-
-
-def _make_event(name: str, start: str, end: str) -> FixedEvent:
-    """Create a FixedEvent without triggering Pydantic validators (used internally)."""
-    ev = object.__new__(FixedEvent)
-    object.__setattr__(ev, "name", name)
-    object.__setattr__(ev, "start", start)
-    object.__setattr__(ev, "end", end)
-    object.__setattr__(ev, "recurrence", "none")
-    return ev
+def _find_conflicts(events: list[FixedEvent]) -> list[ScheduleConflict]:
+    """Return every pair of fixed events whose time ranges overlap."""
+    conflicts: list[ScheduleConflict] = []
+    for index, first in enumerate(events):
+        first_start = _to_min(first.start)
+        first_end = _to_min(first.end)
+        for second in events[index + 1:]:
+            second_start = _to_min(second.start)
+            if second_start >= first_end:
+                break
+            second_end = _to_min(second.end)
+            overlap_start = max(first_start, second_start)
+            overlap_end = min(first_end, second_end)
+            if overlap_start < overlap_end:
+                conflicts.append(ScheduleConflict(
+                    first_event=first.name,
+                    second_event=second.name,
+                    overlap_start=_to_hhmm(overlap_start),
+                    overlap_end=_to_hhmm(overlap_end),
+                ))
+    return conflicts
 
 
 def _normalise(name: str) -> str:

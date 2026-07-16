@@ -4,7 +4,7 @@ models.py — Phase 1: Contract / JSON Schema
 
 from __future__ import annotations
 from typing import Literal, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import re
 
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
@@ -19,7 +19,11 @@ def _validate_time(v: str) -> str:
     return v
 
 
-class FixedEvent(BaseModel):
+class ContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class FixedEvent(ContractModel):
     """A time-anchored event — immovable by the planner."""
     name: str = Field(..., min_length=1)
     start: str = Field(..., description="HH:MM 24h")
@@ -38,7 +42,7 @@ class FixedEvent(BaseModel):
         return (eh * 60 + em) - (sh * 60 + sm)
 
 
-class Task(BaseModel):
+class Task(ContractModel):
     """A flexible, duration-based item — scheduled by the greedy planner."""
     name: str = Field(..., min_length=1)
     duration_min: int = Field(..., gt=0, le=720)
@@ -46,12 +50,12 @@ class Task(BaseModel):
     preferred_window: Literal["morning", "afternoon", "evening", "any"] = "any"
 
 
-class ParseMetadata(BaseModel):
+class ParseMetadata(ContractModel):
     parse_confidence: float = Field(..., ge=0.0, le=1.0)
     warnings: list[str] = Field(default_factory=list)
 
 
-class Schedule(BaseModel):
+class Schedule(ContractModel):
     """Root contract object — the output of the LLM parser."""
     wake_up: str = Field(..., description="HH:MM 24h")
     sleep: str = Field(..., description="HH:MM 24h")

@@ -1,89 +1,130 @@
-LLM Day Planner
-Turn messy natural‑language day descriptions into a minute‑by‑minute plan.
-An LLM (Groq / Llama 3.1 8B) extracts wake‑up time, sleep, fixed events, and flexible tasks. A deterministic greedy planner then builds a complete schedule, respecting priorities, time windows, and constraints.
+# Text-to-Schedule — Smart Day Planner
 
-🗣️ Input: “wake 7, gym 1h, meeting 3pm, sleep 23”
+A small FastAPI application that converts natural-language plans into a validated,
+conflict-aware daily schedule. It uses Groq-hosted `openai/gpt-oss-20b` with strict
+JSON Schema output, Pydantic validation, and a deterministic greedy planner.
 
-📅 Output: a full DayPlan with placed tasks, fixed events, free gaps, and unscheduled items with reasons
+## Features
 
-🔄 Provider‑agnostic: swap Groq for any OpenAI‑compatible API (Azure, Ollama, vLLM) by changing one config block
+- `POST /schedule` natural-language scheduling endpoint
+- `GET /health` health check
+- Interactive Swagger UI at `/docs`
+- Explicit overlapping-event conflicts and unscheduled-task reasons
+- Controlled errors for missing keys, provider failures, and invalid schedules
+- Local rotating application logs and privacy-conscious JSONL metrics
+- Optional CLI using the same parser and planner
 
-✅ Pydantic‑validated pipeline
+## Local setup (PowerShell)
 
-🧪 Deterministic and unit‑testable planner
-
-Perfect for prototyping scheduling assistants, personal day organisers, or as a base for smarter LLM‑driven planning.
-
-*Keywords: scheduling, LLM, groq, llama3, pydantic, greedy, planner, natural-language-processing*
-
-## Files & what each does
-
-| File | Role |
-|------|------|
-| `models.py` | **Contract / JSON schema** - Pydantic models for `Schedule`, `FixedEvent`, `Task`, etc. The single source of truth that the parser and planner both depend on. |
-| `parser.py` | **LLM parser** - Calls Groq (or any OpenAI‑compatible API) with a structured prompt to convert messy user text into a validated `Schedule` object. Handles retries on validation failure. |
-| `planner.py` | **Greedy day planner** - Takes a `Schedule` and fits all tasks into a minute‑by‑minute timeline, respecting priorities, preferred time windows, and fixed events. Returns a `DayPlan` with placed tasks, free gaps, and unscheduled items (with reasons). |
-| `pipeline.py` | **End‑to‑end pipeline** - Wires the parser and planner together. `run("wake 7, gym 1h, meeting 3pm, sleep 23")` returns a `PipelineResult` containing the parse result and the final `DayPlan`. |
-| `main.py` | **Demo script** - Quick end‑to‑end example. Runs the pipeline and prints a human‑readable plan. Can be run with a command‑line query or uses built‑in demos. |
-| `test_parser.py` | **Parser unit tests** - Runs 10+ natural‑language inputs through the LLM parser and checks that the output contains the expected fields (fixed events, tasks, ambiguities, etc.). |
-| `test_planner.py` | **Planner unit tests** - Fully deterministic tests for the greedy planner. Feeds hand‑crafted `Schedule` objects and verifies correct placement, priority order, fallback behaviour, and no overlaps. |
-
-## How to use
-
-### 1. Install dependencies
-```bash
-pip install pydantic openai
+```powershell
+Set-Location "C:\Users\kubab\OneDrive\Pulpit\Projekty\docker_git_smart_scheduler"
+py -3.11 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### 2. Set your API key
-Get a free Groq API key from console.groq.com.
-Then export it as an environment variable:
+If the existing OneDrive-synchronized `.venv` reports `Access denied`, recreate it:
 
-```bash
-export GROQ_API_KEY="gsk_your_key_here"        # Linux/macOS
-set GROQ_API_KEY="gsk_your_key_here"           # Windows cmd
-$env:GROQ_API_KEY="gsk_your_key_here"          # PowerShell
+```powershell
+Remove-Item -Recurse -Force .venv
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
-To use a different provider (Azure, Ollama, vLLM), just edit the LLMConfig dataclass in parser.py - no parser code changes needed.
 
-### 3. Run the demo
-```bash
-python main.py "wake 7, gym 1h, meeting 3pm, dinner 19, sleep 23"
+Open `.env` and set a newly generated Groq key:
+
+```env
+GROQ_API_KEY=<your-new-key>
+SMART_SCHEDULER_MODEL=openai/gpt-oss-20b
 ```
-Or pass multiple queries, or none to use the built‑in DEMO_QUERIES.
 
-### 4. Use in your own code
-```python
-from pipeline import run
+Do not reuse the key that was previously stored in the project. Rotate it in the
+Groq console because plaintext copies existed locally.
 
-pipeline_result = run("wake 8am, yoga 45min, dentist 12pm, sleep 10pm")
-if pipeline_result.success:
-    print(pipeline_result.plan.summary())
-else:
-    print("Parsing failed:", pipeline_result.parse.errors)
+Start the API:
+
+```powershell
+python -m uvicorn app.main:app --reload --port 8000
 ```
-Or use the pieces separately:
 
-```python
-from parser import ScheduleParser
-from planner import GreedyPlanner
+Open:
 
-parser = ScheduleParser()
-result = parser.parse("wake 8am, yoga 45min, dentist 12pm, sleep 10pm")
+- API overview: <http://127.0.0.1:8000/>
+- Health check: <http://127.0.0.1:8000/health>
+- Interactive API: <http://127.0.0.1:8000/docs>
 
-if result.success:
-    planner = GreedyPlanner()
-    plan = planner.plan(result.schedule)
-    print(plan.summary())
-else:
-    print("Parsing failed:", result.errors)
+## Create a schedule
+
+PowerShell example:
+
+```powershell
+$body = @{
+    text = "Wake at 07:00, standup at 10:00 for 30 minutes, deep work for 3 hours high priority, gym at 18:00, sleep at 23:00"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/schedule" `
+    -ContentType "application/json" `
+    -Body $body
 ```
-### 5. Run tests
-```bash
-python test_parser.py           # basic run
-python test_parser.py --verbose # detailed output
-python test_parser.py --case 3  # run only case 3
 
-python test_planner.py          # basic run
-python test_planner.py -v       # verbose
+The response contains the provider model, latency, token usage, validated input
+structure, planned slots, conflicts, warnings, and unscheduled tasks.
+
+## CLI
+
+```powershell
+python -m app.cli "Wake at 07:00, meeting at 10:00 for 30 minutes, project work for 2 hours, sleep at 23:00"
 ```
+
+## Monitoring
+
+Runtime files are written under `logs/`:
+
+- `application.log` — rotating operational log, up to 1 MB with three backups
+- `events.jsonl` — one compact event per scheduling run
+
+Event records include model, latency, attempts, token counts, success, validation
+error count, number of tasks, conflicts, and unscheduled tasks. User schedule text,
+raw model output, and API keys are deliberately excluded.
+
+Optional environment settings:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GROQ_API_KEY` | none | Required Groq credential |
+| `SMART_SCHEDULER_MODEL` | `openai/gpt-oss-20b` | Groq model ID |
+| `SMART_SCHEDULER_LOG_LEVEL` | `INFO` | Python log level |
+| `SMART_SCHEDULER_LOG_DIR` | `logs` | Local log directory |
+
+## Tests
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Tests use fake provider responses and never call Groq.
+
+## Docker (optional)
+
+```powershell
+docker build -t smart-scheduler .
+docker run --rm -p 8000:8000 --env-file .env smart-scheduler
+```
+
+The container runs as an unprivileged user and exposes port `8000`.
+
+## API behavior
+
+| Status | Meaning |
+|---|---|
+| `200` | Schedule created successfully |
+| `422` | Empty request, schema error, or schedule could not be validated |
+| `502` | Groq provider request failed |
+| `503` | `GROQ_API_KEY` is missing |
